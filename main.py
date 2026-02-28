@@ -18,11 +18,50 @@ def send_discord(message):
     if not WEBHOOK_URL:
         print("WEBHOOK_URL not set.")
         return
-    requests.post(WEBHOOK_URL, json={"content": message})
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+    except Exception as e:
+        print("Discord error:", e)
 
-# 🚨 FORCE TEST ALERT ON STARTUP
-send_discord("🚨 STARTUP TEST — QQQ bot is LIVE.")
-print("Startup test alert sent.")
+def get_option_contract(direction, current_price):
+    try:
+        ticker = yf.Ticker(SYMBOL)
+        expirations = ticker.options
+
+        est = pytz.timezone("US/Eastern")
+        today = datetime.now(est).date()
+
+        chosen_exp = None
+        for exp in expirations:
+            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if 7 <= dte <= 14:
+                chosen_exp = exp
+                break
+
+        if not chosen_exp:
+            print("No valid expiration found.")
+            return None
+
+        chain = ticker.option_chain(chosen_exp)
+        options = chain.calls if direction == "CALL" else chain.puts
+
+        options["distance"] = abs(options["strike"] - current_price)
+        best = options.sort_values("distance").iloc[0]
+
+        strike = int(best["strike"])
+        mid_price = round((best["bid"] + best["ask"]) / 2, 2)
+
+        exp_date = datetime.strptime(chosen_exp, "%Y-%m-%d")
+        formatted_date = f"{exp_date.month}/{exp_date.day}"
+
+        contract_type = "C" if direction == "CALL" else "P"
+
+        return f"${SYMBOL} {formatted_date} {strike} {contract_type} @ {mid_price}"
+
+    except Exception as e:
+        print("Option selection error:", e)
+        return None
 
 def check_signal():
     global LAST_SIGNAL
@@ -37,6 +76,7 @@ def check_signal():
             print("Market closed.")
             return
 
+        # DAILY TREND
         daily = yf.download(SYMBOL, period="60d", interval="1d", progress=False)
         if daily.empty:
             print("Daily data empty.")
@@ -48,6 +88,7 @@ def check_signal():
         daily["ema20"] = daily["Close"].ewm(span=20).mean()
         bullish_daily = daily["Close"].iloc[-1] > daily["ema20"].iloc[-1]
 
+        # 1H DATA
         df = yf.download(SYMBOL, period="30d", interval="60m", progress=False)
         if df.empty:
             print("1H data empty.")
@@ -89,9 +130,17 @@ def check_signal():
 
         LAST_SIGNAL = current_signal
 
-        message = f"🚨 QQQ {current_signal} SIGNAL @ {round(close,2)}"
-        send_discord(message)
-        print("Signal sent.")
+        contract = get_option_contract(current_signal, close)
+
+        if contract:
+            message = (
+                f"🚨 QQQ {current_signal} SIGNAL 🚨\n"
+                f"{contract}\n"
+                f"Target: +50%\n"
+                f"Stop: -22%"
+            )
+            send_discord(message)
+            print("Signal sent:", contract)
 
     except Exception as e:
         print("Signal error:", e)
