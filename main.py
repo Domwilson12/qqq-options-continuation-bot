@@ -3,14 +3,29 @@ import os
 import yfinance as yf
 import pandas as pd
 import pytz
+import requests
 from datetime import datetime, time as dt_time
 
 SYMBOL = "QQQ"
 PULLBACK_THRESHOLD = 0.006
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+LAST_SIGNAL = None
 
 print("Bot started successfully.")
 
+def send_discord(message):
+    if not WEBHOOK_URL:
+        print("WEBHOOK_URL not set.")
+        return
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+    except Exception as e:
+        print("Discord error:", e)
+
 def check_signal():
+    global LAST_SIGNAL
+
     try:
         est = pytz.timezone("US/Eastern")
         now = datetime.now(est)
@@ -31,6 +46,8 @@ def check_signal():
             daily.columns = daily.columns.get_level_values(0)
 
         daily["ema20"] = daily["Close"].ewm(span=20).mean()
+
+        bullish_daily = daily["Close"].iloc[-1] > daily["ema20"].iloc[-1]
 
         # 1H
         df = yf.download(SYMBOL, period="30d", interval="60m", progress=False)
@@ -59,10 +76,24 @@ def check_signal():
         long_break = close > prev["High"]
         strong_candle = latest["range"] > latest["avg_range20"]
 
-        if pullback and long_break and strong_candle:
-            print("CALL setup detected at", round(close, 2))
-        else:
+        current_signal = None
+
+        if bullish_daily and pullback and long_break and strong_candle:
+            current_signal = "CALL"
+
+        if not current_signal:
             print("No setup.")
+            return
+
+        if current_signal == LAST_SIGNAL:
+            print("Duplicate signal ignored.")
+            return
+
+        LAST_SIGNAL = current_signal
+
+        message = f"🚨 QQQ {current_signal} SIGNAL @ {round(close,2)}"
+        send_discord(message)
+        print("Signal sent.")
 
     except Exception as e:
         print("Signal error:", e)
