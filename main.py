@@ -6,19 +6,11 @@ import time
 import pytz
 from datetime import datetime, time as dt_time
 
-# ==========================
-# SETTINGS
-# ==========================
-
 SYMBOL = "QQQ"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PULLBACK_THRESHOLD = 0.006
 
-PULLBACK_THRESHOLD = 0.006  # 0.6%
 LAST_SIGNAL = None
-
-# ==========================
-# DISCORD
-# ==========================
 
 def send_discord(message):
     if not WEBHOOK_URL:
@@ -29,69 +21,20 @@ def send_discord(message):
     except Exception as e:
         print("Discord error:", e)
 
-# ==========================
-# OPTION SELECTION
-# ==========================
-
-def get_option_contract(direction, current_price):
-    try:
-        ticker = yf.Ticker(SYMBOL)
-        expirations = ticker.options
-
-        est = pytz.timezone("US/Eastern")
-        today = datetime.now(est).date()
-
-        chosen_exp = None
-        for exp in expirations:
-            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
-            dte = (exp_date - today).days
-            if 7 <= dte <= 14:
-                chosen_exp = exp
-                break
-
-        if not chosen_exp:
-            return None
-
-        chain = ticker.option_chain(chosen_exp)
-        options = chain.calls if direction == "CALL" else chain.puts
-
-        options["distance"] = abs(options["strike"] - current_price)
-        best = options.sort_values("distance").iloc[0]
-
-        strike = int(best["strike"])
-        mid_price = round((best["bid"] + best["ask"]) / 2, 2)
-
-        exp_date = datetime.strptime(chosen_exp, "%Y-%m-%d")
-        formatted_date = f"{exp_date.month}/{exp_date.day}"
-
-        contract_type = "C" if direction == "CALL" else "P"
-
-        return f"${SYMBOL} {formatted_date} {strike} {contract_type} @ {mid_price}"
-
-    except Exception as e:
-        print("Option selection error:", e)
-        return None
-
-# ==========================
-# SIGNAL LOGIC
-# ==========================
-
 def check_signal():
     global LAST_SIGNAL
 
     est = pytz.timezone("US/Eastern")
     now = datetime.now(est)
 
+    print("Heartbeat:", now.strftime("%Y-%m-%d %H:%M:%S"))
+
     if not (dt_time(9,30) <= now.time() <= dt_time(16,0)):
         print("Market closed.")
         return
 
-    print("Checking signal at", now.strftime("%Y-%m-%d %H:%M"))
-
     try:
-        # DAILY DATA
         daily = yf.download(SYMBOL, period="60d", interval="1d", progress=False)
-
         if daily.empty:
             print("Daily data empty.")
             return
@@ -104,11 +47,9 @@ def check_signal():
         bullish_daily = daily["Close"].iloc[-1] > daily["ema20"].iloc[-1]
         bearish_daily = daily["Close"].iloc[-1] < daily["ema20"].iloc[-1]
 
-        # 1H DATA
         df = yf.download(SYMBOL, period="30d", interval="60m", progress=False)
-
         if df.empty:
-            print("1H data empty.")
+            print("Hourly data empty.")
             return
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -119,7 +60,7 @@ def check_signal():
         df["avg_range20"] = df["range"].rolling(20).mean()
 
         if len(df) < 25:
-            print("Not enough 1H candles yet.")
+            print("Not enough hourly candles.")
             return
 
         latest = df.iloc[-1]
@@ -150,32 +91,19 @@ def check_signal():
 
         LAST_SIGNAL = current_signal
 
-        contract = get_option_contract(current_signal, close)
-
-        if contract:
-            message = (
-                f"🚨 QQQ {current_signal} SIGNAL 🚨\n"
-                f"{contract}\n"
-                f"Target: +50%\n"
-                f"Stop: -22%"
-            )
-            send_discord(message)
-            print("Signal sent:", contract)
+        message = f"QQQ {current_signal} SIGNAL at {round(close,2)}"
+        send_discord(message)
+        print("Signal sent.")
 
     except Exception as e:
-        print("Signal logic error:", e)
+        print("Signal error:", e)
 
-# ==========================
-# MAIN LOOP
-# ==========================
+print("Bot started successfully.")
 
-if __name__ == "__main__":
-    print("Bot started.")
+while True:
+    try:
+        check_signal()
+    except Exception as e:
+        print("Main loop error:", e)
 
-    while True:
-        try:
-            check_signal()
-        except Exception as e:
-            print("Main loop error:", e)
-
-        time.sleep(3600)
+    time.sleep(300)  # 5-minute heartbeat so Railway sees activity
